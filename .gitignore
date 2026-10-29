@@ -1,0 +1,21 @@
+# 密钥与本地配置
+.env
+.env.*
+!.env.example
+
+# 编译产物
+server
+main
+*.exe
+*.test
+*.out
+
+# 本地缓存
+.gocache/
+.gomodcache/
+
+# 编辑器 / 系统文件
+.idea/
+.vscode/
+.DS_Store
+*.log
