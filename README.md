@@ -160,37 +160,42 @@ curl -s -X POST $BASE/posts -H "Authorization: Bearer $TOKEN" \
 
 ## 7. 压测：缓存开 vs 关
 
-**环境**：本机 macOS，服务、MySQL、Redis 同机；单实例；100 并发 × 5000 请求；
-预热 200 请求；压测时 `RATE_LIMIT_ENABLED=false` 避免限流干扰。
+**环境**：本机 macOS，服务、MySQL、Redis 同机；单实例；100 并发 × **200,000 请求**（约 4 秒）；
+预热 1,000 请求；压测时 `RATE_LIMIT_ENABLED=false` 避免限流干扰。
+
+> 为什么不用 5000：5000 请求在 5 万 QPS 下只跑 0.1 秒，计时和连接预热会放大误差；
+> 20 万请求约 4 秒，数字更稳。两种请求量下趋势一致，下面用 20 万的结果。
 
 ```bash
 # 缓存开
 CACHE_ENABLED=true RATE_LIMIT_ENABLED=false go run .
 go run ./cmd/bench -url http://127.0.0.1:8080/api/v1/posts/1 \
-  -n 5000 -c 100 -mysql-dsn "$MYSQL_DSN" -tag cache-on
+  -n 200000 -c 100 -mysql-dsn "$MYSQL_DSN" -tag cache-on
 
 # 缓存关（重启服务）
 CACHE_ENABLED=false RATE_LIMIT_ENABLED=false go run .
 go run ./cmd/bench -url http://127.0.0.1:8080/api/v1/posts/1 \
-  -n 5000 -c 100 -mysql-dsn "$MYSQL_DSN" -tag cache-off
+  -n 200000 -c 100 -mysql-dsn "$MYSQL_DSN" -tag cache-off
 ```
 
 | 指标 | 缓存开 | 缓存关 |
 |---|---:|---:|
-| QPS | **47,745** | 37,860 |
-| P50 | 2.00 ms | 2.23 ms |
-| P90 | 2.39 ms | 4.38 ms |
-| P95 | 2.56 ms | 5.48 ms |
-| P99 | **6.29 ms** | 7.55 ms |
-| DB SELECT（5000 请求） | **0** | **5,000** |
+| QPS | **62,376** | 42,461 |
+| P50 | 1.56 ms | 2.05 ms |
+| P90 | 2.08 ms | 3.92 ms |
+| P95 | 2.24 ms | 4.70 ms |
+| P99 | **2.69 ms** | 6.50 ms |
+| DB SELECT（20 万请求） | **0** | **200,000** |
 | 平均回源 | 0 条/请求 | 1 条/请求 |
 
 **怎么解读**
 
-- 缓存把 MySQL 回源从 5000 次降到 0，这是它最核心的价值：保护数据库，而不是单纯刷 QPS。
-- 本机 MySQL 单行主键查询很快，所以 QPS 只提升约 26%（47,745 vs 37,860）；
-  缓存路径本身有 Redis RTT + JSON 反序列化成本。换到真实网络、连接池紧张或热点突增时，差距会放大。
-- P99 从 7.55ms 降到 6.29ms，尾部延迟更稳定。
+- 缓存把 MySQL 回源从 **20 万次降到 0**，这是它最核心的价值：保护数据库，而不是单纯刷 QPS。
+- QPS 从 42,461 提升到 62,376（约 +47%）；本机 MySQL 单行主键查询很快，
+  缓存路径本身有 Redis RTT + JSON 反序列化成本，所以不要吹成几十倍。
+- P99 从 6.50ms 降到 2.69ms，尾部延迟更稳定。
+- 并发不是越高越好：200/400 并发下 QPS 没有继续上升、P99 反而升高，说明已经到本机 CPU 瓶颈；
+  因此取 100 并发作为对比条件。
 
 **局限**：本机同机、单实例、单行数据、无 TLS/负载均衡，数字不能当作生产容量。
 
