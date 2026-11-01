@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
 	"strconv"
@@ -15,6 +17,17 @@ const (
 	TokenTTL = 2 * time.Hour
 )
 
+// TokenInfo 是校验通过后从 token 里取出的信息。
+//
+// 除了用户 ID，还带出 jti 和过期时间：
+//   - jti 用于登出时把这枚 token 加入吊销名单；
+//   - ExpiresAt 用于决定吊销名单里那条记录该保留多久。
+type TokenInfo struct {
+	UserID    int64
+	JTI       string
+	ExpiresAt time.Time
+}
+
 // 从环境变量获取 JWT 签名密钥
 func getJWTSecret() ([]byte, error) {
 	secret := os.Getenv("JWT_SECRET")
@@ -24,6 +37,17 @@ func getJWTSecret() ([]byte, error) {
 	}
 
 	return []byte(secret), nil
+}
+
+// newTokenID 生成 token 的唯一编号（jti）。
+// 用随机数而不是自增，保证不同用户、不同登录之间不会撞号。
+func newTokenID() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// 随机源异常时退化用纳秒时间戳，至少保证不重复
+		return strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	return hex.EncodeToString(buf[:])
 }
 
 // GenerateToken 根据用户 ID 生成 JWT
@@ -42,6 +66,7 @@ func GenerateToken(userID int64) (string, error) {
 	claims := jwt.RegisteredClaims{
 		Subject:   strconv.FormatInt(userID, 10),
 		Issuer:    jwtIssuer,
+		ID:        newTokenID(), // jti：这张 token 的唯一编号，登出时按它拉黑
 		IssuedAt:  jwt.NewNumericDate(now),
 		ExpiresAt: jwt.NewNumericDate(now.Add(TokenTTL)),
 	}
@@ -54,11 +79,11 @@ func GenerateToken(userID int64) (string, error) {
 	return token.SignedString(secret)
 }
 
-// ParseToken 验证 JWT，并返回用户 ID
-func ParseToken(tokenString string) (int64, error) {
+// ParseToken 验证 JWT，并返回用户信息。
+func ParseToken(tokenString string) (*TokenInfo, error) {
 	secret, err := getJWTSecret()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	claims := &jwt.RegisteredClaims{}
@@ -77,13 +102,21 @@ func ParseToken(tokenString string) (int64, error) {
 	)
 
 	if err != nil || !token.Valid {
-		return 0, errors.New("Token 无效或已经过期")
+		return nil, errors.New("Token 无效或已经过期")
 	}
 
 	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
 	if err != nil || userID <= 0 {
-		return 0, errors.New("Token 中的用户 ID 无效")
+		return nil, errors.New("Token 中的用户 ID 无效")
 	}
 
-	return userID, nil
+	info := &TokenInfo{
+		UserID: userID,
+		JTI:    claims.ID,
+	}
+	if claims.ExpiresAt != nil {
+		info.ExpiresAt = claims.ExpiresAt.Time
+	}
+
+	return info, nil
 }

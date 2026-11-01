@@ -3,8 +3,10 @@ package controller
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/wwwrrrjjj/weiyu-go/middleware"
 	"github.com/wwwrrrjjj/weiyu-go/service"
 	"github.com/wwwrrrjjj/weiyu-go/utils"
 )
@@ -104,4 +106,21 @@ func Me(c *gin.Context) {
 		"username":   user.Username,
 		"created_at": user.CreatedAt,
 	})
+}
+
+// Logout 主动让当前 token 失效。
+//
+// JWT 是无状态的，服务端没有会话可以删，所以只能在 Redis 里维护一张「吊销名单」：
+// 把这张 token 的 jti 记下来，中间件每次鉴权时顺带查一次。
+// 名单条目的 TTL 取 token 剩余寿命，到期即自然清理，不会无限增长。
+func Logout(c *gin.Context) {
+	jti := c.GetString(middleware.ContextTokenID)
+	expiresAt := c.GetTime(middleware.ContextTokenExp)
+
+	if err := service.RevokeToken(c.Request.Context(), jti, time.Until(expiresAt)); err != nil {
+		utils.Fail(c, http.StatusInternalServerError, "退出登录失败")
+		return
+	}
+
+	utils.Success(c, nil)
 }

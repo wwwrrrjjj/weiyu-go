@@ -11,27 +11,36 @@ import (
 	"gorm.io/gorm"
 )
 
-// GetPosts 分页获取社区动态列表。
+// GetPosts 游标分页获取动态列表。
+// 第一页不传 cursor；之后每页把上一页返回的 next_cursor 原样带回来即可。
 func GetPosts(c *gin.Context) {
-	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
-	if err != nil || page <= 0 {
-		utils.Fail(c, http.StatusBadRequest, "page 参数不合法")
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	if err != nil || limit < 1 || limit > 50 {
+		utils.Fail(c, http.StatusBadRequest, "limit 需在 1~50 之间")
 		return
 	}
 
-	pageSize, err := strconv.Atoi(c.DefaultQuery("page_size", "10"))
-	if err != nil || pageSize < 1 || pageSize > 100 {
-		utils.Fail(c, http.StatusBadRequest, "page_size 需在 1~100 之间")
+	cursor, err := service.DecodeCursor(c.Query("cursor"))
+	if err != nil {
+		utils.Fail(c, http.StatusBadRequest, "cursor 不合法")
 		return
 	}
 
-	posts, err := service.GetPosts(c.Request.Context(), page, pageSize)
+	posts, next, err := service.GetPostsByCursor(c.Request.Context(), limit, cursor)
 	if err != nil {
 		utils.Fail(c, http.StatusInternalServerError, "获取动态列表失败")
 		return
 	}
 
-	utils.Success(c, posts)
+	data := gin.H{
+		"items":    posts,
+		"has_more": next != nil,
+	}
+	if next != nil {
+		data["next_cursor"] = service.EncodeCursor(*next)
+	}
+
+	utils.Success(c, data)
 }
 
 type CreatePostRequest struct {
@@ -82,4 +91,33 @@ func GetPostByID(c *gin.Context) {
 	}
 
 	utils.Success(c, post)
+}
+
+// DeletePost 删除自己发布的动态。
+func DeletePost(c *gin.Context) {
+	postID, ok := parsePostID(c)
+	if !ok {
+		return
+	}
+
+	userID, ok := currentUserID(c)
+	if !ok {
+		return
+	}
+
+	err := service.DeletePost(c.Request.Context(), postID, userID)
+	if errors.Is(err, service.ErrPostNotFound) {
+		utils.Fail(c, http.StatusNotFound, "动态不存在")
+		return
+	}
+	if errors.Is(err, service.ErrNotPostOwner) {
+		utils.Fail(c, http.StatusForbidden, "只能删除自己的动态")
+		return
+	}
+	if err != nil {
+		utils.Fail(c, http.StatusInternalServerError, "删除动态失败")
+		return
+	}
+
+	utils.Success(c, nil)
 }

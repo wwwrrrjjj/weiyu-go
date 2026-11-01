@@ -36,12 +36,46 @@ func TestTokenRoundTrip(t *testing.T) {
 		t.Fatalf("签发失败: %v", err)
 	}
 
-	userID, err := ParseToken(token)
+	info, err := ParseToken(token)
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
-	if userID != 9527 {
-		t.Fatalf("用户 ID 不一致: got=%d want=9527", userID)
+	if info.UserID != 9527 {
+		t.Fatalf("用户 ID 不一致: got=%d want=9527", info.UserID)
+	}
+	if info.JTI == "" {
+		t.Fatal("token 应携带 jti，否则无法实现登出吊销")
+	}
+	if info.ExpiresAt.IsZero() {
+		t.Fatal("token 应携带过期时间，否则无法决定吊销名单的 TTL")
+	}
+}
+
+// TestGenerateTokenHasUniqueJTI 验证同一用户的两次登录会拿到不同的 jti，
+// 这样登出一次只失效一枚 token，不会把该用户其它设备一起踢下线。
+func TestGenerateTokenHasUniqueJTI(t *testing.T) {
+	t.Setenv("JWT_SECRET", testSecret)
+
+	first, err := GenerateToken(1)
+	if err != nil {
+		t.Fatalf("签发失败: %v", err)
+	}
+	second, err := GenerateToken(1)
+	if err != nil {
+		t.Fatalf("签发失败: %v", err)
+	}
+
+	a, err := ParseToken(first)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	b, err := ParseToken(second)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+
+	if a.JTI == b.JTI {
+		t.Fatalf("两次登录的 jti 不应相同: %s", a.JTI)
 	}
 }
 

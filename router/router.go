@@ -1,9 +1,18 @@
 package router
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/wwwrrrjjj/weiyu-go/controller"
 	"github.com/wwwrrrjjj/weiyu-go/middleware"
+)
+
+const (
+	// apiRateLimitPerMin 单 IP 每分钟请求上限，挡住最粗暴的刷接口。
+	apiRateLimitPerMin = 300
+	// authRateLimitPerMin 登录用户每分钟请求上限，比 IP 维度更准。
+	authRateLimitPerMin = 60
 )
 
 // New 注册全部路由。
@@ -13,6 +22,8 @@ func New() *gin.Engine {
 	r.Use(gin.Logger(), gin.Recovery())
 
 	api := r.Group("/api/v1")
+	// 第一道限流：按来源 IP。放在最前面，未登录的请求也能被挡住。
+	api.Use(middleware.RateLimit("api", apiRateLimitPerMin, time.Minute))
 
 	// 公开接口
 	api.GET("/health", controller.Health)
@@ -26,12 +37,15 @@ func New() *gin.Engine {
 
 	// 需要登录的接口
 	auth := api.Group("")
-	auth.Use(middleware.JWTAuth())
+	// 顺序有意义：先验明身份，限流才能按用户维度算，而不是退化成 IP 维度。
+	auth.Use(middleware.JWTAuth(), middleware.RateLimit("auth", authRateLimitPerMin, time.Minute))
 	{
 		auth.GET("/users/me", controller.Me)
+		auth.POST("/users/logout", controller.Logout)
 		auth.GET("/notifications", controller.ListNotifications)
 
 		auth.POST("/posts", controller.CreatePost)
+		auth.DELETE("/posts/:id", controller.DeletePost)
 		auth.POST("/posts/:id/comments", controller.CreateComment)
 		auth.POST("/posts/:id/likes", controller.LikePost)
 		auth.DELETE("/posts/:id/likes", controller.UnlikePost)

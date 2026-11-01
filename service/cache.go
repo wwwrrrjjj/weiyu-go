@@ -118,12 +118,20 @@ func markNullCached(ctx context.Context, postID int64) error {
 	return config.Redis.Set(ctx, postNullKey(postID), 1, postNullCacheTTL).Err()
 }
 
-// deletePostCache 在写操作后删除缓存，配合读时回填构成 Cache-Aside。
+// deletePostCache 在写操作后删除与这条动态相关的全部缓存，
+// 配合读时回填构成 Cache-Aside。
+//
+// 一次删三个 key：详情、空值标记、点赞计数。
+// 只删详情的话，动态都删了、计数还留在 Redis 里，重建时又会把旧值读回来。
 func deletePostCache(ctx context.Context, postID int64) {
 	if config.Redis == nil {
 		return
 	}
-	_ = config.Redis.Del(ctx, postDetailKey(postID), postNullKey(postID)).Err()
+	_ = config.Redis.Del(ctx,
+		postDetailKey(postID),
+		postNullKey(postID),
+		likeCountKey(postID),
+	).Err()
 }
 
 func getCachedLikeCount(ctx context.Context, postID int64) (int64, bool, error) {

@@ -17,32 +17,59 @@ var (
 	ErrContentTooLong = errors.New("动态内容不能超过500个字符")
 	ErrInvalidUserID  = errors.New("用户ID无效")
 	ErrInvalidPostID  = errors.New("动态ID无效")
+	ErrPostNotFound   = errors.New("动态不存在")
+	ErrNotPostOwner   = errors.New("只能删除自己的动态")
 )
 
-// GetPosts 分页获取动态列表，按发布时间倒序。
-func GetPosts(ctx context.Context, page, pageSize int) ([]models.Post, error) {
-	if page <= 0 {
-		return nil, errors.New("page 不合法")
+const (
+	defaultPostLimit = 10
+	maxPostLimit     = 50
+)
+
+// GetPostsByCursor 按 (created_at, id) 游标分页拉取动态列表。
+//
+// 和 offset 分页的区别：
+//   - offset 分页：LIMIT 10 OFFSET 10000，MySQL 要先扫出 10010 行再丢掉前 10000 行，
+//     翻得越深越慢；而且期间有人发新动态，会让同一行在两页里重复出现。
+//   - 游标分页：把「上一页最后一行的排序键」当作锚点，直接 WHERE ... < 锚点，
+//     借助 (created_at, id) 索引定位，无论翻到第几页成本都一样。
+//
+// 多取一条（limit+1）是为了判断「还有没有下一页」，省掉一次 COUNT(*)。
+func GetPostsByCursor(ctx context.Context, limit int, cursor *PostCursor) ([]models.Post, *PostCursor, error) {
+	if limit <= 0 {
+		limit = defaultPostLimit
 	}
-	if pageSize <= 0 || pageSize > 100 {
-		return nil, errors.New("pageSize 不合法")
+	if limit > maxPostLimit {
+		limit = maxPostLimit
 	}
 
-	offset := (page - 1) * pageSize
-	posts := make([]models.Post, 0, pageSize)
-
-	// 排序键追加 id 作为兜底，避免同一时间戳的记录在翻页时重复或漏出
-	err := config.DB.WithContext(ctx).
+	query := config.DB.WithContext(ctx).
 		Order("created_at DESC").
 		Order("id DESC").
-		Offset(offset).
-		Limit(pageSize).
-		Find(&posts).Error
-	if err != nil {
-		return nil, err
+		Limit(limit + 1)
+
+	if cursor != nil {
+		// 排序键是 (created_at, id) 的降序，所以「下一页」是严格小于锚点的那些行。
+		// 必须用括号把 OR 包起来，否则和以后追加的其它条件组合时优先级会出错。
+		query = query.Where(
+			"(created_at < ? OR (created_at = ? AND id < ?))",
+			cursor.CreatedAt, cursor.CreatedAt, cursor.ID,
+		)
 	}
 
-	return posts, nil
+	posts := make([]models.Post, 0, limit+1)
+	if err := query.Find(&posts).Error; err != nil {
+		return nil, nil, err
+	}
+
+	var next *PostCursor
+	if len(posts) > limit {
+		posts = posts[:limit]
+		last := posts[len(posts)-1]
+		next = &PostCursor{CreatedAt: last.CreatedAt, ID: last.ID}
+	}
+
+	return posts, next, nil
 }
 
 // CreatePost 发布一条动态。
@@ -68,6 +95,56 @@ func CreatePost(ctx context.Context, userID int64, content string) (*models.Post
 	}
 
 	return &post, nil
+}
+
+// DeletePost 删除自己发布的动态，连带清掉它下面的点赞和评论。
+//
+// 三张表的删除放在一个事务里：如果只删了 posts 而 likes/comments 没删，
+// 就会留下永远查不到的孤儿数据，点赞计数也会对不上。
+func DeletePost(ctx context.Context, postID, userID int64) error {
+	if postID <= 0 {
+		return ErrInvalidPostID
+	}
+	if userID <= 0 {
+		return ErrInvalidUserID
+	}
+
+	err := config.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 用 (id, user_id) 一起做条件，顺手完成鉴权：
+		// 别人的动态查不出来，自然也就删不掉。
+		var post models.Post
+		err := tx.Where("id = ? AND user_id = ?", postID, userID).Take(&post).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 再确认一次：到底是「不存在」还是「不是你的」，好让接口返回 404 / 403
+			var exists int64
+			if cerr := tx.Model(&models.Post{}).Where("id = ?", postID).Count(&exists).Error; cerr != nil {
+				return cerr
+			}
+			if exists == 0 {
+				return ErrPostNotFound
+			}
+			return ErrNotPostOwner
+		}
+		if err != nil {
+			return err
+		}
+
+		if err := tx.Where("post_id = ?", postID).Delete(&models.Like{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("post_id = ?", postID).Delete(&models.Comment{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&models.Post{}, postID).Error
+	})
+	if err != nil {
+		return err
+	}
+
+	// 缓存必须在事务提交之后删：顺序反过来的话，事务一但回滚，
+	// 就会留下「缓存没了、数据还在」的状态（虽然能自愈，但没必要）。
+	deletePostCache(ctx, postID)
+	return nil
 }
 
 // GetPostByID 查询动态详情，读取路径为「Redis 缓存 → singleflight 回源 → MySQL」。
