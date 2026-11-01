@@ -153,6 +153,17 @@ func GetPostByID(ctx context.Context, id int64) (*models.Post, error) {
 		return nil, ErrInvalidPostID
 	}
 
+	// 压测对照：缓存关闭时直接查库。
+	// 不能只让 getCachedPost 返回 miss——singleflight 仍会把并发请求合并成极少次查库，
+	// 这样测出来的「无缓存」是假的。
+	if !config.CacheEnabled() {
+		var post models.Post
+		if err := config.DB.WithContext(ctx).Where("id = ?", id).Take(&post).Error; err != nil {
+			return nil, err
+		}
+		return &post, nil
+	}
+
 	// 1. 先查缓存，命中直接返回
 	if post, ok, err := getCachedPost(ctx, id); err != nil {
 		slog.Warn("读取帖子缓存失败，降级查库", "post_id", id, "err", err)

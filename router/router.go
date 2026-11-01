@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/wwwrrrjjj/weiyu-go/config"
 	"github.com/wwwrrrjjj/weiyu-go/controller"
 	"github.com/wwwrrrjjj/weiyu-go/middleware"
 )
@@ -23,7 +24,10 @@ func New() *gin.Engine {
 
 	api := r.Group("/api/v1")
 	// 第一道限流：按来源 IP。放在最前面，未登录的请求也能被挡住。
-	api.Use(middleware.RateLimit("api", apiRateLimitPerMin, time.Minute))
+	// 本机压测用 RATE_LIMIT_ENABLED=false 关闭，避免压测工具先被限流挡住。
+	if config.RateLimitEnabled() {
+		api.Use(middleware.RateLimit("api", apiRateLimitPerMin, time.Minute))
+	}
 
 	// 公开接口
 	api.GET("/health", controller.Health)
@@ -38,7 +42,10 @@ func New() *gin.Engine {
 	// 需要登录的接口
 	auth := api.Group("")
 	// 顺序有意义：先验明身份，限流才能按用户维度算，而不是退化成 IP 维度。
-	auth.Use(middleware.JWTAuth(), middleware.RateLimit("auth", authRateLimitPerMin, time.Minute))
+	auth.Use(middleware.JWTAuth())
+	if config.RateLimitEnabled() {
+		auth.Use(middleware.RateLimit("auth", authRateLimitPerMin, time.Minute))
+	}
 	{
 		auth.GET("/users/me", controller.Me)
 		auth.POST("/users/logout", controller.Logout)

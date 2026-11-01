@@ -23,6 +23,15 @@ func GetLikeCount(ctx context.Context, postID int64) (int64, error) {
 		return 0, ErrInvalidPostID
 	}
 
+	if !config.CacheEnabled() {
+		var count int64
+		if err := config.DB.WithContext(ctx).Model(&models.Like{}).
+			Where("post_id = ?", postID).Count(&count).Error; err != nil {
+			return 0, err
+		}
+		return count, nil
+	}
+
 	if count, ok, err := getCachedLikeCount(ctx, postID); err != nil {
 		slog.Warn("读取点赞计数缓存失败，降级查库", "post_id", postID, "err", err)
 	} else if ok {

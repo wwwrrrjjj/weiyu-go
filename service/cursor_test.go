@@ -45,10 +45,10 @@ func TestDecodeCursorRejectsMalformedInput(t *testing.T) {
 		input string
 	}{
 		{"不是 base64", "not-base64!!"},
-		{"缺少分隔符", "Zm9v"},        // "foo"
-		{"缺少 ID", "MTIzOg"},        // "123:"
+		{"缺少分隔符", "Zm9v"},         // "foo"
+		{"缺少 ID", "MTIzOg"},       // "123:"
 		{"时间为 0", "MDox"},         // "0:1"
-		{"ID 为 0", "MTIzOjA"},       // "123:0"
+		{"ID 为 0", "MTIzOjA"},     // "123:0"
 		{"ID 不是数字", "MTIzOmFiYw"}, // "123:abc"
 	}
 
